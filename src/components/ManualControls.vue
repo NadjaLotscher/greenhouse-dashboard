@@ -1,49 +1,78 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { sendCommand } from '../services/commandService'
+import { useDevice } from '../services/deviceService'
 
 const emit = defineEmits<{
   toast: [message: string, type: 'success' | 'error']
 }>()
 
 const loadingBtn = ref<string | null>(null)
+const { device } = useDevice('greenhouse-01')
 
 interface ControlButton {
   label: string
   type: string
   value: string
-  variant: 'primary' | 'warning' | 'danger'
   key: string
+  controlType: 'heater' | 'fan' | 'mist'
 }
 
 const modeButtons: ControlButton[] = [
-  { label: 'Set Automatic', type: 'mode', value: 'automatic', variant: 'primary', key: 'mode-auto' },
-  { label: 'Set Manual', type: 'mode', value: 'manual', variant: 'warning', key: 'mode-manual' }
+  { label: 'Set Automatic', type: 'mode', value: 'automatic', key: 'mode-auto', controlType: 'heater' },
+  { label: 'Set Manual', type: 'mode', value: 'manual', key: 'mode-manual', controlType: 'heater' }
 ]
 
-const controlGroups: Array<{ label: string; buttons: ControlButton[] }> = [
+const controlGroups: Array<{ label: string; buttons: ControlButton[]; controlType: 'heater' | 'fan' | 'mist' }> = [
   {
     label: 'Heater',
+    controlType: 'heater',
     buttons: [
-      { label: 'ON', type: 'heater_override', value: 'on', variant: 'danger', key: 'heater-on' },
-      { label: 'OFF', type: 'heater_override', value: 'off', variant: 'primary', key: 'heater-off' }
+      { label: 'ON', type: 'heater_override', value: 'on', key: 'heater-on', controlType: 'heater' },
+      { label: 'OFF', type: 'heater_override', value: 'off', key: 'heater-off', controlType: 'heater' }
     ]
   },
   {
     label: 'Fan',
+    controlType: 'fan',
     buttons: [
-      { label: 'ON', type: 'fan_override', value: 'on', variant: 'primary', key: 'fan-on' },
-      { label: 'OFF', type: 'fan_override', value: 'off', variant: 'primary', key: 'fan-off' }
+      { label: 'ON', type: 'fan_override', value: 'on', key: 'fan-on', controlType: 'fan' },
+      { label: 'OFF', type: 'fan_override', value: 'off', key: 'fan-off', controlType: 'fan' }
     ]
   },
   {
     label: 'Mist',
+    controlType: 'mist',
     buttons: [
-      { label: 'ON', type: 'mist_override', value: 'on', variant: 'primary', key: 'mist-on' },
-      { label: 'OFF', type: 'mist_override', value: 'off', variant: 'primary', key: 'mist-off' }
+      { label: 'ON', type: 'mist_override', value: 'on', key: 'mist-on', controlType: 'mist' },
+      { label: 'OFF', type: 'mist_override', value: 'off', key: 'mist-off', controlType: 'mist' }
     ]
   }
 ]
+
+function getCurrentState(controlType: 'heater' | 'fan' | 'mist'): boolean {
+  if (!device.value) return false
+  if (controlType === 'heater') return device.value.heaterOn
+  if (controlType === 'fan') return device.value.fanOn
+  if (controlType === 'mist') return device.value.mist1On
+  return false
+}
+
+function getButtonVariant(btn: ControlButton, controlType?: 'heater' | 'fan' | 'mist'): 'primary' | 'warning' | 'danger' {
+  if (controlType) {
+    const isActive = getCurrentState(controlType)
+    const isOn = btn.value === 'on'
+    if (isActive === isOn) return 'danger'
+    return 'primary'
+  }
+
+  if (btn.type === 'mode' && device.value) {
+    if (btn.value === device.value.mode) return 'danger'
+    return 'primary'
+  }
+
+  return 'primary'
+}
 
 async function handleCommand(btn: ControlButton) {
   loadingBtn.value = btn.key
@@ -79,7 +108,7 @@ function btnClass(variant: string) {
           <button
             v-for="btn in modeButtons"
             :key="btn.key"
-            :class="btnClass(btn.variant)"
+            :class="btnClass(getButtonVariant(btn))"
             :disabled="loadingBtn === btn.key"
             @click="handleCommand(btn)"
           >
@@ -98,7 +127,7 @@ function btnClass(variant: string) {
               <button
                 v-for="btn in group.buttons"
                 :key="btn.key"
-                :class="btnClass(btn.variant)"
+                :class="btnClass(getButtonVariant(btn, group.controlType))"
                 :disabled="loadingBtn === btn.key"
                 @click="handleCommand(btn)"
                 class="flex-1"
