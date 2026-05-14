@@ -11,7 +11,7 @@ import { useCommands } from '../services/commandService'
 
 const { device, loading: deviceLoading } = useDevice('greenhouse-01')
 const { measurements, loading: measurementsLoading } = useMeasurements('greenhouse-01')
-const { commands, loading: commandsLoading } = useCommands('greenhouse-01')
+const { commands, loading: commandsLoading, error: commandsError } = useCommands('greenhouse-01')
 
 const toast = ref<{ message: string; type: 'success' | 'error' } | null>(null)
 
@@ -43,6 +43,7 @@ const lastSeenText = computed(() => {
         <HistoricalCharts :measurements="measurements" :loading="measurementsLoading" />
         <div class="space-y-8">
           <ManualControls @toast="showToast" />
+          <div v-if="commandsError" class="text-red-400 text-sm p-3 bg-red-500/10 rounded">{{ commandsError }}</div>
           <CommandHistory :commands="commands" :loading="commandsLoading" />
         </div>
       </div>
