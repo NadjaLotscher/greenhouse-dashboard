@@ -1,4 +1,4 @@
-import { collection, query, where, orderBy, limit, onSnapshot } from 'firebase/firestore'
+import { collection, query, where, limit, onSnapshot } from 'firebase/firestore'
 import { db } from '../firebase'
 import { ref, onUnmounted } from 'vue'
 
@@ -35,7 +35,13 @@ export function useMeasurements(deviceId: string) {
       id: doc.id,
       ...doc.data()
     })) as Measurement[]
-    measurements.value = docs.reverse()
+    measurements.value = docs.sort((a, b) => {
+      const aDate = a.timestamp?.toDate ? a.timestamp.toDate() : new Date(a.timestamp)
+      const bDate = b.timestamp?.toDate ? b.timestamp.toDate() : new Date(b.timestamp)
+      const aTime = Number.isNaN(aDate.getTime()) ? Number.POSITIVE_INFINITY : aDate.getTime()
+      const bTime = Number.isNaN(bDate.getTime()) ? Number.POSITIVE_INFINITY : bDate.getTime()
+      return aTime - bTime
+    })
     loading.value = false
   }, (err) => {
     console.error('Measurements error:', err)

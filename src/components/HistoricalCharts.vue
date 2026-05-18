@@ -59,7 +59,7 @@ const labels = computed(() =>
   props.measurements.map(m => {
     if (!m.timestamp) return ''
     const date = m.timestamp.toDate ? m.timestamp.toDate() : new Date(m.timestamp)
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    return date.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
   })
 )
 
