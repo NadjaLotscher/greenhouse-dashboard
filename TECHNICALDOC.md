@@ -1,3 +1,444 @@
+# 1. Executive Summary
+
+## What the System Does
+
+The greenhouse dashboard is a real-time IoT monitoring and control system that connects
+a Raspberry Pi in a physical greenhouse to a web-based dashboard accessible from any
+browser. The Pi reads sensors (temperature, humidity, soil moisture) and reports actuator
+states (heater, fan, misters). The dashboard displays this data in real time and allows
+users to send control commands back to the Pi.
+
+## Problem It Solves
+
+Greenhouses require continuous monitoring, but checking conditions in person is
+impractical. This system provides remote, real-time visibility into greenhouse conditions
+and remote control of actuators, all without managing any server infrastructure.
+
+## Key Components
+
+The system consists of four main parts:
+
+- **Raspberry Pi** — reads physical sensors and actuators in the greenhouse, sends data
+to the cloud, and executes incoming commands.
+- **Firebase Cloud Functions** — serverless functions that validate and process data from
+the Pi and commands from the dashboard.
+- **Firestore** — a real-time NoSQL database that stores device state, measurement
+history, and command records, and pushes updates to connected clients.
+- **Vue 3 Dashboard** — a web application that displays real-time status cards,
+historical charts, manual controls, and a command audit trail.
+
+## Current State
+
+The dashboard frontend, Cloud Functions, Firestore schema, and authentication are built
+and functional. The Raspberry Pi integration (sensor reading, command execution, and
+Cloud Function calls) is in progress and will be built by the project team. An
+`updateCommand` Cloud Function for the Pi to mark commands as executed is not yet
+implemented.
+
+---
+
+# 2. System Architecture
+
+## High-Level Diagram
+
+```mermaid
+graph LR
+    A["🥒 Raspberry Pi<br/>(in greenhouse)"] -->|"Sensor readings<br/>every 10-30s"| B["☁️ Cloud Functions<br/>(Firebase)"]
+    B -->|"Validated data<br/>+ timestamp"| C[("🗄️ Firestore<br/>(Database)")]
+    C -->|"Real-time<br/>updates"| D["📊 Vue Dashboard<br/>(Web browser)"]
+    D -->|"Control commands"| B
+    B -->|"Store command"| C
+    C -->|"Command status<br/>updates"| D
+
+    style A fill:#8B9467
+    style B fill:#FFB84D
+    style C fill:#4A90E2
+    style D fill:#7BC74F
+```
+
+## Main Components
+
+**Raspberry Pi (Data Source):** Reads physical sensors via GPIO pins and sends
+structured JSON payloads to the `submitMeasurement` Cloud Function at a configurable
+interval (e.g., every 30 seconds). Also polls Firestore for pending commands, executes
+them via GPIO, and updates their status. The Pi integration code is not yet complete.
+
+**Cloud Functions (Logic Layer):** Two serverless functions act as the secure boundary
+between external callers and the database. `submitMeasurement` validates sensor data and
+writes it to Firestore. `createCommand` validates user commands and stores them with a
+`pending` status. Cloud Functions ensure the Pi never needs direct database credentials
+and that all data is validated before storage.
+
+**Firestore (Database):** Stores three collections: `devices` (current greenhouse
+state), `measurements` (historical sensor readings), and `commands` (control command
+audit trail). Firestore provides real-time listeners that push data changes to the
+dashboard without polling.
+
+**Vue Dashboard (User Interface):** A single-page application that subscribes to
+Firestore via real-time listeners. It displays seven status cards, three historical
+charts, manual control buttons, and a command history table. Users must authenticate
+before accessing the dashboard.
+
+## Data Flows
+
+### Sensor Reading Flow
+
+1. Pi reads sensors and actuator states.
+2. Pi calls `submitMeasurement` Cloud Function with a JSON payload.
+3. Cloud Function validates the data, adds a server timestamp, and writes to both
+`/measurements` (new document) and `/devices/greenhouse-01` (update current state).
+4. Firestore notifies all active dashboard listeners.
+5. Dashboard re-renders status cards and charts with the new data.
+
+Total latency from sensor read to screen update is typically 2–5 seconds.
+
+### Command Flow
+
+1. User clicks a control button (e.g., "Heater ON") on the dashboard.
+2. Dashboard calls `createCommand` Cloud Function with the device ID, command type, and
+value.
+3. Cloud Function verifies authentication, creates a command document with status
+`pending` in `/commands`.
+4. Dashboard listener picks up the new command and displays it as "pending" in the
+command history table.
+5. Pi polls `/commands` for pending commands, executes them via GPIO, and updates the
+command status to `executed` or `rejected`.
+6. Dashboard listener sees the status change and updates the table.
+
+### Key Files
+
+| File | Purpose |
+| --- | --- |
+| `/src/views/DashboardView.vue` | Main dashboard page |
+| `/src/services/deviceService.ts` | Real-time listener for device state |
+| `/src/services/measurementService.ts` | Real-time listener for measurements |
+| `/src/services/commandService.ts` | Command sending and history listener |
+| `/functions/src/index.ts` | Cloud Functions (submitMeasurement, createCommand) |
+| `/src/firebase.ts` | Firebase SDK initialization |
+| `firebase.json` | Firebase project configuration |
+
+---
+
+# 3. Technical Stack and Design Decisions
+
+## Technologies
+
+| Layer | Technology | Version | Purpose |
+| --- | --- | --- | --- |
+| Frontend Framework | Vue 3 | 3.4.38 | Reactive UI with Composition API |
+| Build Tool | Vite | 5.4.2 | Fast development server and production bundler |
+| Styling | Tailwind CSS | 4.3.0 | Utility-first CSS framework |
+| Language | TypeScript | 5.5.3+ | Type safety across frontend and functions |
+| Backend | Cloud Functions | Node.js 24 | Serverless data validation and processing |
+| Database | Firestore | — | Real-time NoSQL database |
+| Authentication | Firebase Auth | — | Email/password authentication |
+| Hosting | Firebase Hosting | — | Static site hosting with CDN |
+| Charting | Chart.js + vue-chartjs | 4.5.1 / 5.3.3 | Time-series visualization |
+
+## Why Firebase
+
+Firebase was chosen because the project requires real-time data sync, has no dedicated
+infrastructure team, and needs to scale from one greenhouse to many without operational
+overhead.
+
+**Real-time sync is built in.** Firestore listeners push data changes to connected
+clients automatically. Without this, the dashboard would need to poll the database
+repeatedly, which is slower and more expensive.
+
+**Zero infrastructure management.** Google manages scaling, backups, security patches,
+and monitoring. The team focuses on application code, not server administration.
+
+**Integrated services.** Authentication, database, serverless functions, and hosting are
+all part of one platform, reducing integration complexity.
+
+## Why Cloud Functions as Middleware
+
+The Pi does not write directly to Firestore. Cloud Functions sit between the Pi and the
+database for three reasons: they validate incoming data before it reaches the database,
+they add reliable server-side timestamps, and they ensure the Pi never stores database
+credentials. The trade-off is an additional network hop (~50ms), which is acceptable for
+a monitoring system.
+
+## Why Vue 3
+
+The team has existing Vue experience, which reduces the learning curve. Vue's reactivity
+system pairs naturally with Firestore listeners: when a Firestore snapshot updates a
+`ref()`, Vue automatically re-renders the affected components. The Composition API with
+`<script setup>` keeps components concise.
+
+## Why Firestore Over SQL
+
+Firestore's real-time listener capability is the primary reason. The project's data
+model is simple (three flat collections), so the lack of complex SQL queries is not a
+limitation. Firestore also scales automatically and requires no database server
+management.
+
+## Trade-offs
+
+| Decision | Benefit | Cost |
+| --- | --- | --- |
+| Firebase platform | Zero infrastructure, fast setup | Vendor lock-in, proprietary APIs |
+| Firestore over PostgreSQL | Built-in real-time sync, auto-scaling | No complex queries, denormalized data |
+| Cloud Functions middleware | Secure validation boundary | Extra network hop, cold start latency (1–2s) |
+| Real-time listeners | Instant UI updates | Higher Firestore read costs at scale |
+| TypeScript | Catches errors at compile time | Slightly more verbose than plain JavaScript |
+
+---
+
+# 4. Component Documentation
+
+This section serves as a reference for all major components, services, data structures,
+and backend functions.
+
+## 4.1 Frontend Views
+
+### DashboardView.vue
+
+**Location:** `/src/views/DashboardView.vue`
+
+Main orchestrator page. Initializes three real-time data subscriptions (device state,
+measurements, commands) and passes the resulting reactive data to child components.
+Manages a toast notification system for user feedback on command actions.
+
+**Data subscriptions:**
+
+```tsx
+const { device, loading: deviceLoading } = useDevice('greenhouse-01')
+const { measurements, loading: measurementsLoading } = useMeasurements('greenhouse-01')
+const { commands, loading: commandsLoading } = useCommands('greenhouse-01')
+```
+
+**Child components used:** `AppShell`, `CurrentStatusGrid`, `HistoricalCharts`,
+`ManualControls`, `CommandHistory`
+
+### LoginView.vue
+
+**Location:** `/src/views/LoginView.vue`
+
+Email/password login form. Calls `authService.login()` on submission, then redirects to
+the dashboard on success. Displays an error message on failure. Protected routes redirect
+unauthenticated users here via the router guard.
+
+## 4.2 Frontend Components
+
+### CurrentStatusGrid.vue
+
+**Location:** `/src/components/CurrentStatusGrid.vue`
+
+Displays seven `StatusCard` components in a responsive grid showing current temperature,
+humidity, soil moisture, heater state, fan state, mist 1 state, and mist 2 state. Each
+card is color-coded: green for normal, amber for warning, red for critical.
+
+**Props:** `device: DeviceData`
+
+### StatusCard.vue
+
+A single status card with a title, value, icon, color indicator, and optional subtitle.
+
+**Props:** `title: string`, `value: string | number`, `icon: string`, `color: string`,
+`subtitle?: string`
+
+### HistoricalCharts.vue
+
+**Location:** `/src/components/HistoricalCharts.vue`
+
+Displays three Chart.js line charts: temperature over time, humidity over time, and
+actuator activity timeline. Transforms raw measurement arrays into Chart.js dataset
+format using computed properties that automatically recompute when new measurements
+arrive.
+
+**Props:** `measurements: Measurement[]`, `loading: boolean`
+
+The actuator chart maps boolean states to a 0–3 numeric scale (Off, Mist, Fan, Heat)
+with custom Y-axis tick labels.
+
+### ManualControls.vue
+
+**Location:** `/src/components/ManualControls.vue`
+
+Renders control buttons for mode switching (manual/auto) and actuator overrides
+(heater, fan, mist on/off). Tracks per-button loading state and emits toast events for
+success/error feedback. Button color reflects current device state: red if the actuator
+is already in the desired state, blue otherwise.
+
+**Props:** `device: DeviceData`**Emits:** `toast(message: string, type: 'success' | 'error')`
+
+### CommandHistory.vue
+
+**Location:** `/src/components/CommandHistory.vue`
+
+Displays a table of recent commands with columns for time, type, value, status, and
+rejection reason. Status is color-coded: green for executed, yellow for pending, red for
+rejected.
+
+**Props:** `commands: Command[]`, `loading: boolean`
+
+### OnlineStatusBadge.vue
+
+**Location:** `/src/components/OnlineStatusBadge.vue`
+
+Shows a green pulsing dot and "Online" if the Pi is connected, or a red dot and
+"Offline" with the last-seen timestamp if the Pi has not reported in over 5 minutes.
+
+**Props:** `online: boolean`, `lastSeen: Timestamp`
+
+## 4.3 Services / Composables
+
+All services are in `/src/services/` and follow a common pattern: create reactive refs,
+set up a Firestore `onSnapshot` listener, clean up on component unmount, and return the
+refs.
+
+### authService.ts
+
+Provides `currentUser` (reactive ref to the current Firebase Auth user),
+`authLoading` (boolean ref), `login(email, password)`, and `logout()`.
+
+### deviceService.ts — `useDevice(deviceId)`
+
+Listens to a single Firestore document at `/devices/{deviceId}`. Returns
+`{ device: Ref<DeviceData | null>, loading: Ref<boolean>, error: Ref<string | null> }`.
+
+### measurementService.ts — `useMeasurements(deviceId)`
+
+Queries `/measurements` where `deviceId` matches, limited to 200 documents. Returns
+`{ measurements: Ref<Measurement[]>, loading, error }`.
+
+### commandService.ts — `useCommands(deviceId)` and `sendCommand()`
+
+`useCommands` queries `/commands` where `deviceId` matches, ordered by `createdAt` desc,
+limited to 20 documents. `sendCommand(deviceId, type, value)` invokes the `createCommand`
+Cloud Function via `httpsCallable`. Returns
+`{ commands: Ref<Command[]>, loading, error }`.
+
+## 4.4 Cloud Functions
+
+Both functions are defined in `/functions/src/index.ts` and deployed as Firebase
+callable functions with `maxInstances: 10`.
+
+### submitMeasurement
+
+**Called by:** Raspberry Pi (every 10–30 seconds)
+
+**Input:** `{ deviceId, temperature, humidity, soilDry, heaterOn, fanOn, mist1On, mist2On, mode }`
+
+**Behavior:** Validates that `deviceId` is present. Constructs a measurement document
+with a server-side timestamp and default values via nullish coalescing (`??`). Writes to
+`/measurements` and updates `/devices/{deviceId}` with the latest state and `lastSeen`.
+
+**Returns:** `{ success: true, id: string }`
+
+**Not yet implemented:** Input range validation, rate limiting, device token
+verification.
+
+### createCommand
+
+**Called by:** Dashboard UI (via `sendCommand`)
+
+**Input:** `{ deviceId, type, value }`
+
+**Behavior:** Verifies the caller is authenticated via `request.auth.uid`. Validates
+that `deviceId`, `type`, and `value` are present. Creates a command document with status
+`pending`, `createdBy` set to the authenticated user ID, and `executedAt: null`.
+
+**Returns:** `{ success: true, id: string }`
+
+**Not yet implemented:** Command type/value validation, device ownership checks, rate
+limiting, safety conflict detection.
+
+### updateCommand (not yet implemented)
+
+The Pi will need a function to mark commands as `executed` or `rejected` after
+processing them. This function should accept a command ID, new status, and optionally an
+`executedAt` timestamp or `rejectedReason`.
+
+## 4.5 Firestore Collections
+
+### /devices/{deviceId}
+
+Stores the current state of each greenhouse. Currently one document: `greenhouse-01`.
+
+```tsx
+interface DeviceData {
+  name: string
+  online: boolean
+  lastSeen: Timestamp
+  currentTemperature: number
+  currentHumidity: number
+  soilDry: boolean
+  heaterOn: boolean
+  fanOn: boolean
+  mist1On: boolean
+  mist2On: boolean
+  mode: string            // "auto" | "manual"
+}
+```
+
+Updated by `submitMeasurement` on every sensor reading.
+
+### /measurements/{auto-id}
+
+Append-only collection of historical sensor readings. One document per reading.
+
+```tsx
+interface Measurement {
+  deviceId: string
+  timestamp: Timestamp
+  temperature: number
+  humidity: number
+  soilDry: boolean
+  heaterOn: boolean
+  fanOn: boolean
+  mist1On: boolean
+  mist2On: boolean
+  mode: string
+  temperatureStatus: string   // "normal" | "warning" | "critical"
+  humidityStatus: string
+}
+```
+
+Queried by the dashboard with `WHERE deviceId == X LIMIT 200`. Requires a composite
+index on `(deviceId, timestamp)` for efficient ordered queries.
+
+### /commands/{auto-id}
+
+Audit trail of all control commands.
+
+```tsx
+interface Command {
+  deviceId: string
+  type: string               // "heater_override" | "fan_override" | "mist_override" | "mode"
+  value: string              // "on" | "off" | "auto" | "manual"
+  status: string             // "pending" | "executed" | "rejected"
+  createdAt: Timestamp
+  createdBy: string
+  executedAt: Timestamp | null
+  rejectedReason: string | null
+}
+```
+
+**Valid type/value combinations:**
+
+| Type | Valid Values |
+| --- | --- |
+| heater_override | "on", "off" |
+| fan_override | "on", "off" |
+| mist_override | "on", "off" |
+| mode | "auto", "manual" |
+
+## 4.6 Raspberry Pi Integration (Planned)
+
+The Pi code is not yet implemented. It will need to:
+
+1. Read sensors (DHT22 for temperature/humidity, analog input for soil moisture) and
+GPIO pin states for actuators.
+2. Call `submitMeasurement` via HTTP POST at a regular interval.
+3. Poll `/commands` for documents where `status == "pending"` and
+`deviceId == "greenhouse-01"`.
+4. Execute commands by toggling GPIO pins.
+5. Update command status to `executed` or `rejected` in Firestore.
+
+---
+
 # 5. Implementation Details
 
 This section covers internal implementation patterns that are important for
@@ -9,7 +450,7 @@ descriptions from Section 4.
 All three data services (`useDevice`, `useMeasurements`, `useCommands`) follow the same
 pattern:
 
-```typescript
+```tsx
 export function useDevice(deviceId: string) {
   const device = ref<DeviceData | null>(null)
   const loading = ref(true)
@@ -36,16 +477,16 @@ export function useDevice(deviceId: string) {
 
 - `onSnapshot` registers a persistent listener that fires on every document change.
 - The reactive `ref` is updated inside the callback, which triggers Vue's reactivity
-  system to re-render dependent components.
+system to re-render dependent components.
 - `onUnmounted` ensures the listener is cleaned up when the component is destroyed,
-  preventing memory leaks and unnecessary Firestore reads.
+preventing memory leaks and unnecessary Firestore reads.
 - Each listener costs 1 Firestore read on initial load plus 1 read per subsequent
-  update.
+update.
 
 ### Differences Between the Three Services
 
 | Service | Firestore Target | Query | Ordering |
-|---------|-----------------|-------|----------|
+| --- | --- | --- | --- |
 | `useDevice` | Single document | None (document listener) | N/A |
 | `useMeasurements` | Collection query | `where('deviceId', '==', id), limit(200)` | Client-side reverse |
 | `useCommands` | Collection query | `where('deviceId', '==', id), orderBy('createdAt', 'desc'), limit(20)` | Server-side |
@@ -60,7 +501,7 @@ DashboardView initializes all three listeners simultaneously. Each listener has 
 loading state, and child components conditionally render only after their data is
 ready:
 
-```vue
+```
 <CurrentStatusGrid v-if="!deviceLoading" :device="device" />
 <HistoricalCharts v-if="!measurementsLoading" :measurements="measurements" />
 ```
@@ -74,7 +515,7 @@ ManualControls emits toast events upward to DashboardView, which displays them w
 
 When a user clicks a control button in ManualControls:
 
-```typescript
+```tsx
 async function handleCommand(btn: ControlButton) {
   loadingBtn.value = btn.key
   try {
@@ -100,7 +541,7 @@ HistoricalCharts uses three computed properties to transform the raw `Measuremen
 array into Chart.js dataset objects. Each computed property maps over the measurements
 array to extract timestamps (for labels) and the relevant values (for data points).
 
-```typescript
+```tsx
 const tempData = computed(() => ({
   labels: props.measurements.map(m => toDate(m.timestamp).toLocaleTimeString(...)),
   datasets: [{
@@ -124,7 +565,7 @@ Mist → 1, Off → 0) with custom Y-axis tick labels, creating a discrete step 
 
 The router uses a `beforeEach` guard with route metadata to protect the dashboard:
 
-```typescript
+```tsx
 router.beforeEach(async (to) => {
   if (to.meta.requiresAuth) {
     const user = await getCurrentUser()
@@ -141,7 +582,7 @@ immediately unsubscribes, avoiding persistent auth listeners in the router.
 Firestore returns Timestamp objects, but after serialization they may become strings
 or numbers. All timestamp conversions use a defensive pattern:
 
-```typescript
+```tsx
 const date = value.toDate ? value.toDate() : new Date(value)
 ```
 
@@ -209,7 +650,7 @@ direct database operations.
 The system has four actor types with different access needs:
 
 | Actor | Can Read | Can Write | Notes |
-|-------|----------|-----------|-------|
+| --- | --- | --- | --- |
 | Teacher | All data | Device settings, commands (via Cloud Function) | Full access to their assigned devices |
 | Student | Device state, measurements, commands | Commands (via Cloud Function) | Cannot modify settings or delete data |
 | Raspberry Pi | Pending commands | Measurements (via Cloud Function), command status | Authenticated via device token |
@@ -295,14 +736,14 @@ service cloud.firestore {
 ### Rule Summary
 
 - **Measurements are immutable from clients.** Only Cloud Functions write them. This
-  prevents fabricated sensor data.
+prevents fabricated sensor data.
 - **Commands cannot be created directly.** Users must go through `createCommand`, which
-  validates authentication. Commands can only be updated from `pending` to
-  `executed`/`rejected`, preventing status manipulation.
+validates authentication. Commands can only be updated from `pending` to
+`executed`/`rejected`, preventing status manipulation.
 - **Users cannot escalate their own role.** The `diff().affectedKeys()` check blocks
-  updates to `role` or `permissions` fields.
+updates to `role` or `permissions` fields.
 - **Device settings are teacher-only.** Students can view greenhouse state but cannot
-  change configuration.
+change configuration.
 
 ## 6.5 Cloud Function Security Enhancements
 
@@ -311,15 +752,15 @@ The current Cloud Functions perform minimal validation. For production, add:
 **submitMeasurement:**
 
 - Device token verification (Pi includes a secret token, function checks it against an
-  environment variable).
+environment variable).
 - Input range validation (temperature between -50 and 60°C, humidity between 0 and
-  100%).
+100%).
 - Rate limiting (minimum 5 seconds between submissions per device).
 
 **createCommand:**
 
 - Device ownership check (query `/deviceAssignments` to verify the user is assigned to
-  the target device).
+the target device).
 - Command type/value validation against the allowed combinations.
 - Rate limiting (maximum 1 command per 5 seconds per user).
 
@@ -328,22 +769,22 @@ The current Cloud Functions perform minimal validation. For production, add:
 Before deploying the production rules, the following data must exist in Firestore:
 
 - User documents in `/users/{uid}` with at minimum `uid`, `email`, `role`
-  (`teacher` or `student`).
+(`teacher` or `student`).
 - Device assignment documents in `/deviceAssignments/` mapping devices to assigned
-  users.
+users.
 - Device token set as an environment variable in Cloud Functions configuration.
 - Anonymous authentication disabled — require email/password login.
 
 ## 6.7 Security Deployment Checklist
 
-- [ ] Deploy Firestore rules from Section 6.4
-- [ ] Create user documents for all teachers and students
-- [ ] Create device assignment documents
-- [ ] Set device token environment variable in Cloud Functions
-- [ ] Update Pi code to include device token in `submitMeasurement` calls
-- [ ] Remove or disable anonymous authentication
-- [ ] Test access as teacher, student, and unauthenticated user
-- [ ] Enable Cloud Functions logging for security monitoring
+- [ ]  Deploy Firestore rules from Section 6.4
+- [ ]  Create user documents for all teachers and students
+- [ ]  Create device assignment documents
+- [ ]  Set device token environment variable in Cloud Functions
+- [ ]  Update Pi code to include device token in `submitMeasurement` calls
+- [ ]  Remove or disable anonymous authentication
+- [ ]  Test access as teacher, student, and unauthenticated user
+- [ ]  Enable Cloud Functions logging for security monitoring
 
 ---
 
@@ -352,10 +793,10 @@ Before deploying the production rules, the following data must exist in Firestor
 ## 7.1 Requirements
 
 | Software | Version | Installation |
-|----------|---------|-------------|
-| Node.js | 24 LTS | https://nodejs.org |
+| --- | --- | --- |
+| Node.js | 24 LTS | [https://nodejs.org](https://nodejs.org/) |
 | npm | 11+ | Included with Node.js |
-| Git | Latest | https://git-scm.com |
+| Git | Latest | [https://git-scm.com](https://git-scm.com/) |
 | Firebase CLI | Latest | `npm install -g firebase-tools` |
 
 Verify installation:
@@ -370,7 +811,7 @@ git --version     # 2.x.x
 
 ```bash
 # Clone and enter project
-git clone https://github.com/[your-org]/greenhouse-dashboard.git
+git clone <https://github.com/[your-org]/greenhouse-dashboard.git>
 cd greenhouse-dashboard
 
 # Install frontend dependencies
@@ -387,7 +828,7 @@ cp .env.example .env
 
 Edit `.env` with your Firebase project credentials:
 
-```ini
+```
 VITE_FIREBASE_API_KEY=your-api-key
 VITE_FIREBASE_AUTH_DOMAIN=your-project.firebaseapp.com
 VITE_FIREBASE_PROJECT_ID=your-project-id
@@ -406,7 +847,7 @@ Find these values in Firebase Console → Project Settings → Your Apps → Web
 
 ```bash
 npm run dev
-# Available at http://localhost:5173
+# Available at <http://localhost:5173>
 ```
 
 Vite provides hot module replacement — code changes appear in the browser without a full
@@ -417,16 +858,16 @@ page reload.
 ```bash
 cd functions
 npm run serve
-# Emulator UI at http://localhost:4000
-# Functions at http://localhost:5001
-# Firestore at http://localhost:8080
+# Emulator UI at <http://localhost:4000>
+# Functions at <http://localhost:5001>
+# Firestore at <http://localhost:8080>
 ```
 
 To connect the frontend to local emulators, add to `/src/firebase.ts`:
 
-```typescript
+```tsx
 if (location.hostname === 'localhost') {
-  connectAuthEmulator(auth, 'http://localhost:9099', { disableWarnings: true })
+  connectAuthEmulator(auth, '<http://localhost:9099>', { disableWarnings: true })
   connectFirestoreEmulator(db, 'localhost', 8080)
   connectFunctionsEmulator(functions, 'localhost', 5001)
 }
@@ -441,7 +882,7 @@ project.
 
 ```bash
 npm run build          # Output: dist/ folder
-npm run preview        # Preview production build locally at http://localhost:4173
+npm run preview        # Preview production build locally at <http://localhost:4173>
 ```
 
 **Build Cloud Functions:**
@@ -470,19 +911,19 @@ After deployment, the app is available at `https://your-project-id.web.app`.
 
 ## 7.5 Post-Deployment Verification
 
-- [ ] Frontend loads at the hosting URL
-- [ ] Login works with a test account
-- [ ] Dashboard displays device data
-- [ ] Real-time updates work (data changes appear without refresh)
-- [ ] Manual control buttons send commands successfully
-- [ ] Command history table updates
-- [ ] No errors in browser DevTools console
-- [ ] `firebase functions:list` shows deployed function endpoints
+- [ ]  Frontend loads at the hosting URL
+- [ ]  Login works with a test account
+- [ ]  Dashboard displays device data
+- [ ]  Real-time updates work (data changes appear without refresh)
+- [ ]  Manual control buttons send commands successfully
+- [ ]  Command history table updates
+- [ ]  No errors in browser DevTools console
+- [ ]  `firebase functions:list` shows deployed function endpoints
 
 ## 7.6 Common Issues
 
 | Problem | Cause | Solution |
-|---------|-------|---------|
+| --- | --- | --- |
 | `dist/` not found on deploy | Forgot to build | Run `npm run build` before deploying |
 | ESLint errors block deployment | Code quality issues | Run `cd functions && npm run lint -- --fix` |
 | Missing `VITE_FIREBASE_*` variables | `.env` file missing | Create `.env` from `.env.example` with credentials |
@@ -543,7 +984,7 @@ read/write counts, Hosting tab for bandwidth usage.
 Firebase uses pay-per-use pricing. The main cost drivers are Firestore reads and writes.
 
 | Service | Unit | Cost | Free Tier |
-|---------|------|------|-----------|
+| --- | --- | --- | --- |
 | Firestore Reads | Per 100K documents | $0.06 | 50K/day |
 | Firestore Writes | Per 100K documents | $0.18 | 20K/day |
 | Firestore Deletes | Per 100K documents | $0.02 | 20K/day |
@@ -577,7 +1018,7 @@ seconds, ~8 commands per day.
 ## 8.3 Scaling Estimates
 
 | Scale | Monthly Reads | Monthly Writes | Estimated Cost |
-|-------|--------------|----------------|----------------|
+| --- | --- | --- | --- |
 | 1 class (25 users) | ~190K | ~173K | Free |
 | 5 classes (125 users) | ~950K | ~865K | Free |
 | 10 classes (250 users) | ~1.9M | ~1.7M | ~$4/month |
@@ -596,15 +1037,15 @@ and measurements arriving every 30 seconds, that is 60 reads per measurement, or
 **Mitigation strategies:**
 
 - Unsubscribe listeners when the dashboard tab is hidden or the component unmounts
-  (already implemented via `onUnmounted`).
+(already implemented via `onUnmounted`).
 - Reduce listener frequency by batching updates or only subscribing to the device
-  document (not the full measurements query) for real-time updates.
+document (not the full measurements query) for real-time updates.
 - Use lazy loading: only subscribe to measurements when the charts tab is active.
 
 ## 8.5 Performance Baselines
 
 | Metric | Expected Value |
-|--------|---------------|
+| --- | --- |
 | Initial page load | 2–3 seconds |
 | Subsequent navigation | <1 second (cached) |
 | Measurement to screen update | 1–2 seconds |
@@ -646,4 +1087,3 @@ device tokens.
 
 **Quarterly:** Review scaling trends; optimize queries based on usage patterns; update
 dependencies.
-
