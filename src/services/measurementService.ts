@@ -38,8 +38,8 @@ export function useMeasurements(deviceId: string) {
     measurements.value = docs.sort((a, b) => {
       const aDate = a.timestamp?.toDate ? a.timestamp.toDate() : new Date(a.timestamp)
       const bDate = b.timestamp?.toDate ? b.timestamp.toDate() : new Date(b.timestamp)
-      const aTime = Number.isNaN(aDate.getTime()) ? 0 : aDate.getTime()
-      const bTime = Number.isNaN(bDate.getTime()) ? 0 : bDate.getTime()
+      const aTime = Number.isNaN(aDate.getTime()) ? Number.POSITIVE_INFINITY : aDate.getTime()
+      const bTime = Number.isNaN(bDate.getTime()) ? Number.POSITIVE_INFINITY : bDate.getTime()
       return aTime - bTime
     })
     loading.value = false
